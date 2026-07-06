@@ -1,0 +1,10 @@
+# Rust build output
+/target
+
+# Backup / editor cruft
+**/*.rs.bk
+*.swp
+.DS_Store
+
+# Cargo.lock IS committed (see below): this crate pins exact protocol-schema
+# versions and ships a test binary, so a locked, reproducible build matters.

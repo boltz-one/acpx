@@ -1,0 +1,63 @@
+[package]
+name = "boltz-acpx"
+version = "0.1.0"
+edition = "2024"
+license = "Apache-2.0"
+description = "Agent Client Protocol (ACP) client + session runtime for Rust — handshake, session create/resume/load with reconnect, per-session prompt queueing, permission policy, and JSON session persistence."
+repository = "https://github.com/boltz-one/acpx"
+readme = "README.md"
+keywords = ["acp", "agent-client-protocol", "agent", "llm", "coding-agent"]
+categories = ["asynchronous", "api-bindings"]
+publish = false
+
+[lib]
+# Crate name defaults to `boltz_acpx`. Doctests disabled: the doc examples are
+# illustrative, not runnable against a live agent.
+doctest = false
+
+[features]
+# Builds the in-tree fake ACP agent binary + gates the hermetic integration
+# tests that drive it. Run integration tests with:
+#   cargo test --features test-support
+test-support = []
+
+# In-process perf counters/timings/gauges + optional JSON-lines capture. A
+# profiling aid, not required for correctness; off by default.
+perf-metrics = []
+
+# Minimal real ACP agent (ndjson-over-stdio) used only by the integration
+# tests (tests/client_lifecycle.rs, tests/runtime_lifecycle.rs). Gated behind
+# `test-support` so a plain `cargo build` skips it.
+[[bin]]
+name = "acp-fake-agent"
+path = "tests/fixtures/fake_agent/main.rs"
+required-features = ["test-support"]
+
+[dependencies]
+anyhow = "1.0.86"
+thiserror = "2.0.12"
+futures = "0.3.32"
+parking_lot = "0.12.1"
+serde = { version = "1.0.221", features = ["derive", "rc"] }
+serde_json = { version = "1.0.144", features = ["preserve_order", "raw_value"] }
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.1.2", features = ["v4", "v5", "v7", "serde"] }
+log = "0.4"
+regex = "1.5"
+dirs = "6.0"
+percent-encoding = "2.3.2"
+indexmap = { version = "2.7.0", features = ["serde"] }
+
+[target.'cfg(not(target_family = "wasm"))'.dependencies]
+smol = "2.0"
+agent-client-protocol = "=1.0.1"
+agent-client-protocol-schema = "=1.1.0"
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
+[dev-dependencies]
+tempfile = "3.20.0"

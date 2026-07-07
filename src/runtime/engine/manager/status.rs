@@ -14,7 +14,11 @@ use crate::runtime::public::contract::{
 };
 use crate::runtime::public::errors::{AcpRuntimeError, AcpRuntimeErrorCode};
 use crate::runtime::public::probe::probe_runtime;
-use crate::session::mode_preference::{set_desired_config_option, set_desired_mode_id};
+use crate::session::config_options::apply_config_options_to_record;
+use crate::session::mode_preference::{
+    set_desired_config_option, set_desired_mode_id, set_desired_model_id,
+};
+use crate::session::model_application::current_model_id_from_set_model_response;
 
 impl AcpRuntime {
     /// Ports `getCapabilities` (gap 13). With no handle, returns the
@@ -119,6 +123,44 @@ impl AcpRuntime {
         {
             let mut record = connected.record.lock();
             set_desired_mode_id(&mut record, Some(mode));
+        }
+        self.persist(&connected).await
+    }
+
+    /// Ports `setSessionModel` orchestration (previously only reachable
+    /// internally via `ConnectedSession::set_session_model`, with no way
+    /// for a public caller to also persist the desired-model preference).
+    /// Mirrors `manager_spawn`'s initial-model application: folds the
+    /// `session/set_config_option` response's config options onto the
+    /// record (falling back to the requested `model_id` when the response
+    /// carries no model-designated option), so `get_status().models`
+    /// reflects the change immediately, before persisting the
+    /// desired-model preference.
+    pub async fn set_model(
+        &self,
+        handle: &AcpRuntimeHandle,
+        model_id: &str,
+        model_config_id: Option<&str>,
+    ) -> Result<(), AcpRuntimeError> {
+        let connected = self.connected(handle)?;
+        let response = connected.set_session_model(model_id).await.map_err(|err| {
+            wrap_err(
+                AcpRuntimeErrorCode::BackendUnsupportedControl,
+                "session/set_model failed",
+                err,
+            )
+        })?;
+        {
+            let mut record = connected.record.lock();
+            let current_model_id = current_model_id_from_set_model_response(
+                Some(response.config_options.as_slice()),
+                Some(model_id),
+            );
+            apply_config_options_to_record(&mut record, Some(response.config_options));
+            if let (Some(current_model_id), Some(acpx)) = (current_model_id, record.acpx.as_mut()) {
+                acpx.current_model_id = Some(current_model_id);
+            }
+            set_desired_model_id(&mut record, Some(model_id), model_config_id);
         }
         self.persist(&connected).await
     }

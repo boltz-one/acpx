@@ -789,6 +789,77 @@ fn session_options_model_is_applied_to_the_live_connection() {
     });
 }
 
+/// `AcpRuntime::set_model` round-trip against the real fake agent: a session
+/// that advertises a `model`-category config option (`ACP_FAKE_AGENT_MODEL_CONFIG=1`)
+/// must, after `set_model`, actually send `session/set_config_option` and
+/// have `get_status().models.current_model_id` reflect the fake agent's
+/// echoed-back response — not just that the call didn't error.
+#[test]
+fn set_model_round_trips_through_get_status() {
+    smol::block_on(async {
+        let state_dir = tempfile::tempdir().unwrap();
+        let cwd = tempfile::tempdir().unwrap();
+        let runtime = test_runtime(state_dir.path(), cwd.path());
+        let rpc_log = tempfile::NamedTempFile::new().unwrap();
+
+        let session_options = SessionAgentOptions {
+            env: Some(HashMap::from([
+                ("ACP_FAKE_AGENT_MODEL_CONFIG".to_string(), "1".to_string()),
+                (
+                    "ACP_FAKE_AGENT_RPC_LOG".to_string(),
+                    rpc_log.path().to_string_lossy().into_owned(),
+                ),
+            ])),
+            ..Default::default()
+        };
+        let handle = runtime
+            .ensure_session(AcpRuntimeEnsureInput {
+                session_key: "set-model-round-trip".to_string(),
+                agent: "test-agent".to_string(),
+                mode: AcpRuntimeSessionMode::Persistent,
+                resume_session_id: None,
+                cwd: None,
+                session_options: Some(session_options),
+            })
+            .await
+            .expect("ensure_session should succeed");
+
+        let initial_status = runtime
+            .get_status(&handle)
+            .await
+            .expect("get_status should succeed for a connected session");
+        assert_eq!(
+            initial_status
+                .models
+                .as_ref()
+                .and_then(|m| m.current_model_id.as_deref()),
+            Some("default-model"),
+            "the fake agent should advertise its default current model at session creation"
+        );
+
+        runtime
+            .set_model(&handle, "gpt-5", None)
+            .await
+            .expect("the fake agent accepts any session/set_config_option call for model");
+
+        let log = std::fs::read_to_string(rpc_log.path()).unwrap_or_default();
+        assert!(
+            log.lines().any(|line| line == "session/set_config_option"),
+            "expected session/set_config_option to have been sent, RPC log was: {log:?}"
+        );
+
+        let status = runtime
+            .get_status(&handle)
+            .await
+            .expect("get_status should succeed");
+        assert_eq!(
+            status.models.and_then(|m| m.current_model_id).as_deref(),
+            Some("gpt-5"),
+            "set_model should update the record's current-model-id to reflect the fake agent's response"
+        );
+    });
+}
+
 /// Gap 15(e): a fresh session whose `session/new` response omits
 /// `configOptions` after an earlier connection had some must clear the
 /// stale value, not carry it over.

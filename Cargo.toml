@@ -1,14 +1,14 @@
 [package]
 name = "boltz-acpx"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 license = "Apache-2.0"
 description = "Agent Client Protocol (ACP) client + session runtime for Rust — handshake, session create/resume/load with reconnect, per-session prompt queueing, permission policy, and JSON session persistence."
 repository = "https://github.com/boltz-one/acpx"
 readme = "README.md"
-keywords = ["acp", "agent-client-protocol", "agent", "llm", "coding-agent"]
+keywords = ["acp", "agent-client", "agent", "llm", "coding-agent"]
 categories = ["asynchronous", "api-bindings"]
-publish = false
+publish = true
 
 [lib]
 # Crate name defaults to `boltz_acpx`. Doctests disabled: the doc examples are

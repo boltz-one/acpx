@@ -8,6 +8,7 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
 
+use agent_client_protocol::schema::v1::SessionConfigOption;
 use serde::{Deserialize, Serialize};
 
 use crate::runtime::engine::session_options::SessionAgentOptions;
@@ -119,6 +120,11 @@ pub struct AcpRuntimeStatus {
     pub models: Option<AcpRuntimeSessionModels>,
     pub usage: Option<AcpRuntimeSessionUsage>,
     pub available_commands: Option<Vec<AcpRuntimeAvailableCommand>>,
+    /// Agent-advertised config options (model, mode, thought_level, ...),
+    /// each carrying its `category` + `Select { options, current_value }`.
+    /// Lets the host render the thinking-level dropdown from the agent's own
+    /// advertised values. Populated from `SessionAcpxState.config_options`.
+    pub config_options: Option<Vec<SessionConfigOption>>,
 }
 
 /// Ports `AcpRuntimeDoctorReport`.

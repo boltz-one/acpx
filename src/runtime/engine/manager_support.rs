@@ -178,6 +178,7 @@ pub(super) fn runtime_status_from_record(record: &SessionRecord) -> AcpRuntimeSt
                 })
                 .collect()
         });
+    let config_options = acpx.and_then(|a| a.config_options.clone());
     AcpRuntimeStatus {
         summary: Some(status_summary(record)),
         acpx_record_id: Some(record.acpx_record_id.clone()),
@@ -186,6 +187,7 @@ pub(super) fn runtime_status_from_record(record: &SessionRecord) -> AcpRuntimeSt
         models,
         usage: build_usage_field(record),
         available_commands,
+        config_options,
     }
 }
 
@@ -210,4 +212,46 @@ pub(super) fn failed_turn(request_id: String, err: AcpRuntimeError) -> AcpRuntim
     });
     let (cancel_tx, _cancel_rx) = futures::channel::oneshot::channel();
     AcpRuntimeTurn::new(request_id, events, result, cancel_tx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::session::persistence::serialize::test_support::sample_session_record;
+
+    #[test]
+    fn status_exposes_config_options_from_record() {
+        use agent_client_protocol::schema::v1::{
+            SessionConfigId, SessionConfigKind, SessionConfigOption, SessionConfigSelect,
+            SessionConfigSelectOption, SessionConfigValueId,
+        };
+        let mut record = sample_session_record();
+        let select = SessionConfigSelect::new(
+            SessionConfigValueId::new("high"),
+            vec![SessionConfigSelectOption::new(
+                SessionConfigValueId::new("high"),
+                "High",
+            )],
+        );
+        let option = SessionConfigOption::new(
+            SessionConfigId::new("thought_level"),
+            "Thinking",
+            SessionConfigKind::Select(select),
+        );
+        record.acpx.as_mut().unwrap().config_options = Some(vec![option]);
+
+        let status = runtime_status_from_record(&record);
+        let options = status
+            .config_options
+            .expect("config_options should be populated from the record");
+        assert_eq!(options.len(), 1);
+        assert_eq!(&*options[0].id.0, "thought_level");
+    }
+
+    #[test]
+    fn status_config_options_none_when_record_has_none() {
+        let record = sample_session_record();
+        let status = runtime_status_from_record(&record);
+        assert!(status.config_options.is_none());
+    }
 }

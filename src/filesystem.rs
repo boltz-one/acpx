@@ -26,9 +26,11 @@ use std::sync::Arc;
 use agent_client_protocol::schema::v1::{
     ReadTextFileRequest, ReadTextFileResponse, WriteTextFileRequest, WriteTextFileResponse,
 };
+use parking_lot::RwLock;
 
 use crate::error::{AcpError, Result};
 use crate::permissions::{PermissionRequestHandler, confirm_action};
+use crate::runtime::public::contract::OnFsWriteHook;
 use crate::session::conversation_model::conversation::iso_now;
 use crate::types::{NonInteractivePermissionPolicy, PermissionMode};
 
@@ -54,7 +56,7 @@ pub type OnOperationCallback = Arc<dyn Fn(ClientOperation) + Send + Sync>;
 /// `FileSystemHandlers` in `filesystem.ts` closes over.
 pub struct FilesystemHandlers {
     root_dir: PathBuf,
-    permission_mode: PermissionMode,
+    permission_mode: Arc<RwLock<PermissionMode>>,
     non_interactive_policy: NonInteractivePermissionPolicy,
     handler: Option<std::sync::Arc<dyn PermissionRequestHandler>>,
     // TODO(gap-20-wiring): defaults to `None` so `FilesystemHandlers::new`'s
@@ -63,12 +65,15 @@ pub struct FilesystemHandlers {
     // wire it to `record_client_operation` +
     // `AcpRuntimeEvent::ClientOperation`'s event-stream emission.
     on_operation: Option<OnOperationCallback>,
+    on_fs_write: Option<OnFsWriteHook>,
 }
 
 impl FilesystemHandlers {
     /// `cwd` must already exist (it's the session's working directory);
     /// canonicalized once up front so every later boundary check compares
-    /// against a symlink-resolved root.
+    /// against a symlink-resolved root. `permission_mode` is wrapped in a
+    /// shared `Arc<RwLock<...>>` so the live `set_permission_mode` control
+    /// can flip it after spawn — clone the same `Arc` the manager keeps.
     pub fn new(
         cwd: impl AsRef<Path>,
         permission_mode: PermissionMode,
@@ -83,11 +88,30 @@ impl FilesystemHandlers {
         })?;
         Ok(Self {
             root_dir,
-            permission_mode,
+            permission_mode: Arc::new(RwLock::new(permission_mode)),
             non_interactive_policy,
             handler,
             on_operation: None,
+            on_fs_write: None,
         })
+    }
+
+    /// Shares the live permission-mode lock with an externally owned clone
+    /// (the manager keeps one so `set_permission_mode` can update it). Must
+    /// be called before the handler is wrapped in its session `Arc`.
+    pub fn with_shared_permission_mode(
+        mut self,
+        permission_mode: Arc<RwLock<PermissionMode>>,
+    ) -> Self {
+        self.permission_mode = permission_mode;
+        self
+    }
+
+    /// Attaches the pre-write hook fired before each `fs/write_text_file`
+    /// lands on disk (see [`OnFsWriteHook`]).
+    pub fn with_on_fs_write(mut self, on_fs_write: OnFsWriteHook) -> Self {
+        self.on_fs_write = Some(on_fs_write);
+        self
     }
 
     /// Attaches an operation-progress callback, mirroring acpx's
@@ -99,13 +123,27 @@ impl FilesystemHandlers {
         self
     }
 
+    /// Returns a clone of the live permission-mode lock so the manager can
+    /// update it via `set_permission_mode` after the handler has been moved
+    /// into the session's connection task.
+    pub fn shared_permission_mode(&self) -> Arc<RwLock<PermissionMode>> {
+        self.permission_mode.clone()
+    }
+
+    /// Updates the live permission policy. Writes through the shared lock,
+    /// so every `read_text_file`/`write_text_file` call site sees the new
+    /// mode on its next `confirm_action` read.
+    pub fn set_permission_mode(&self, permission_mode: PermissionMode) {
+        *self.permission_mode.write() = permission_mode;
+    }
+
     /// Ports `updatePermissionPolicy`.
     pub fn update_permission_policy(
         &mut self,
         permission_mode: PermissionMode,
         non_interactive_policy: NonInteractivePermissionPolicy,
     ) {
-        self.permission_mode = permission_mode;
+        *self.permission_mode.write() = permission_mode;
         self.non_interactive_policy = non_interactive_policy;
     }
 
@@ -136,7 +174,7 @@ impl FilesystemHandlers {
             details.clone(),
         );
 
-        if self.permission_mode == PermissionMode::DenyAll {
+        if *self.permission_mode.read() == PermissionMode::DenyAll {
             let message = "fs/read_text_file (--deny-all)".to_string();
             self.emit_operation(
                 "fs/read_text_file",
@@ -178,8 +216,9 @@ impl FilesystemHandlers {
         self.emit_operation("fs/write_text_file", "running", summary.clone(), None);
 
         let title = format!("Allow write to {}", path.display());
+        let mode = *self.permission_mode.read();
         let approved = confirm_action(
-            self.permission_mode,
+            mode,
             self.non_interactive_policy,
             self.handler.as_deref(),
             params.session_id.clone(),
@@ -208,6 +247,9 @@ impl FilesystemHandlers {
                 );
                 return Err(err);
             }
+        }
+        if let Some(hook) = &self.on_fs_write {
+            hook(&path, &params.content);
         }
         if let Err(source) = std::fs::write(&path, &params.content) {
             let err = io_err(format!("failed to write {}", path.display()), source);

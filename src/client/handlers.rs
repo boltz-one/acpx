@@ -14,7 +14,7 @@
 use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::SessionNotification;
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use super::state::{PermissionStats, PermissionStatsHandle};
 use crate::filesystem::FilesystemHandlers;
@@ -26,9 +26,12 @@ use crate::types::{NonInteractivePermissionPolicy, PermissionMode};
 /// because `session/request_permission` is a distinct wire method from the
 /// fs/terminal confirmation gates (which already carry their own copies
 /// internally, see [`FilesystemHandlers`]/[`TerminalManager`]).
+///
+/// `mode` is a shared live lock so the runtime's `set_permission_mode`
+/// control flips it after spawn in lockstep with the fs/terminal gates.
 #[derive(Clone)]
 pub struct PermissionRequestWiring {
-    pub mode: PermissionMode,
+    pub mode: Arc<RwLock<PermissionMode>>,
     pub non_interactive_policy: NonInteractivePermissionPolicy,
     pub handler: Option<Arc<dyn PermissionRequestHandler>>,
     /// Gap 1: programmatic permission policy (autoApprove/autoDeny/escalate
@@ -48,7 +51,7 @@ pub struct PermissionRequestWiring {
 impl Default for PermissionRequestWiring {
     fn default() -> Self {
         Self {
-            mode: PermissionMode::ApproveReads,
+            mode: Arc::new(RwLock::new(PermissionMode::ApproveReads)),
             non_interactive_policy: NonInteractivePermissionPolicy::Deny,
             handler: None,
             policy: None,

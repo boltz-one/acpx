@@ -30,7 +30,7 @@ mod registry;
 mod turn;
 mod types;
 
-pub use options::{AcpFileSessionStoreOptions, AcpRuntimeOptions};
+pub use options::{AcpFileSessionStoreOptions, AcpRuntimeOptions, OnFsWriteHook};
 pub(crate) use options::{attachment_content_blocks, legacy_terminal_event_from_turn_result};
 pub use registry::{AcpAgentRegistry, AcpSessionStore, BuiltInAgentRegistry};
 pub use turn::AcpRuntimeTurn;

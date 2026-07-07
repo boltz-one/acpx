@@ -4,7 +4,7 @@
 //! terminal-event compatibility shim.
 
 use std::collections::HashMap;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use agent_client_protocol::schema::v1::McpServer;
@@ -13,6 +13,14 @@ use crate::permissions::{PermissionEscalationEvent, PermissionPolicy, Permission
 use crate::runtime::public::errors::{AcpRuntimeError, AcpRuntimeErrorCode};
 use crate::runtime::public::events::AcpRuntimeEvent;
 use crate::types::{NonInteractivePermissionPolicy, PermissionMode};
+
+/// Fire-and-forget pre-write hook for `fs/write_text_file`, letting a host
+/// track pending edits: invoked on the bridge thread with the resolved
+/// absolute path (within the session cwd) and the new content, immediately
+/// before the file is overwritten. The callback reads the current (base)
+/// text itself so it captures base+new atomically without a TOCTOU window
+/// straddling the write. `None` (the default) disables the hook.
+pub type OnFsWriteHook = Arc<dyn Fn(&Path, &str) + Send + Sync>;
 
 use super::registry::{AcpAgentRegistry, AcpSessionStore};
 use super::types::{AcpRuntimeTurnAttachment, AcpRuntimeTurnResult};
@@ -62,6 +70,10 @@ pub struct AcpRuntimeOptions {
     /// hardcoded per Requirement 1/Step 3, so the embedding GPUI app can
     /// tune it.
     pub prompt_queue_capacity: Option<usize>,
+    /// Pre-write hook fired before each `fs/write_text_file` lands on disk
+    /// (see [`OnFsWriteHook`]). Lets the host build an edits tracker that
+    /// can revert writes. `None` = no hook.
+    pub on_fs_write: Option<OnFsWriteHook>,
 }
 
 /// Ports `AcpFileSessionStoreOptions`; re-exported for convenience so

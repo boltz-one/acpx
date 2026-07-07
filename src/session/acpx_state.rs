@@ -12,6 +12,8 @@ use std::collections::HashMap;
 use agent_client_protocol::schema::v1::SessionConfigOption;
 use serde::{Deserialize, Serialize};
 
+use crate::types::PermissionMode;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SessionAvailableCommand {
     pub name: String,
@@ -74,6 +76,10 @@ pub struct SessionAcpxState {
     pub config_options: Option<Vec<SessionConfigOption>>,
     #[serde(default)]
     pub session_options: Option<SessionOptions>,
+    /// Host-set live permission mode (Write/Ask), persisted so a reconnect
+    /// re-applies it. Distinct from the ACP `mode` config option above.
+    #[serde(default)]
+    pub desired_permission_mode: Option<PermissionMode>,
 }
 
 #[cfg(test)]

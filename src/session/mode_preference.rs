@@ -10,6 +10,7 @@ use crate::agent_command::model_support::SessionModelState;
 use crate::session::acpx_state::SessionAcpxState;
 use crate::session::model_state::apply_advertised_model_state;
 use crate::session::record::SessionRecord;
+use crate::types::PermissionMode;
 
 fn normalize_trimmed(value: Option<&str>) -> Option<String> {
     let trimmed = value?.trim();
@@ -72,6 +73,19 @@ pub fn set_desired_config_option(record: &mut SessionRecord, config_id: &str, va
     }
     acpx.desired_config_options = (!desired.is_empty()).then_some(desired);
     record.acpx = Some(acpx);
+}
+
+/// Persists the host-set live permission mode (Write/Ask) so a reconnect
+/// re-applies it. Distinct from the ACP `mode` config option.
+pub fn set_desired_permission_mode(record: &mut SessionRecord, mode: PermissionMode) {
+    let mut acpx = ensure_acpx_state(record.acpx.take());
+    acpx.desired_permission_mode = Some(mode);
+    record.acpx = Some(acpx);
+}
+
+/// Reads the persisted desired permission mode (for reconnect re-application).
+pub fn get_desired_permission_mode(state: Option<&SessionAcpxState>) -> Option<PermissionMode> {
+    state.and_then(|s| s.desired_permission_mode)
 }
 
 /// Ports `clearDesiredConfigOption`.
@@ -194,5 +208,21 @@ mod tests {
             Some("gpt-5".to_string())
         );
         assert!(!get_desired_config_options(record.acpx.as_ref()).contains_key("model"));
+    }
+
+    #[test]
+    fn set_and_get_desired_permission_mode_round_trips() {
+        let mut record = sample_session_record();
+        set_desired_permission_mode(&mut record, PermissionMode::DenyAll);
+        assert_eq!(
+            get_desired_permission_mode(record.acpx.as_ref()),
+            Some(PermissionMode::DenyAll)
+        );
+
+        let serialized = serde_json::to_string(record.acpx.as_ref().unwrap()).unwrap();
+        assert!(
+            serialized.contains("\"desired_permission_mode\":\"deny-all\""),
+            "persists kebab-case: {serialized}"
+        );
     }
 }

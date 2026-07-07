@@ -190,6 +190,24 @@ impl AcpRuntime {
         self.persist(&connected).await
     }
 
+    /// Flips the session's live permission mode through the shared lock the
+    /// fs/terminal gates and `session/request_permission` wiring read from.
+    /// Takes effect for in-flight and future calls — no session restart.
+    /// Persists the desired mode onto the record so a reconnect re-applies it.
+    pub async fn set_permission_mode(
+        &self,
+        handle: &AcpRuntimeHandle,
+        mode: crate::types::PermissionMode,
+    ) -> Result<(), AcpRuntimeError> {
+        let connected = self.connected(handle)?;
+        connected.set_permission_mode(mode);
+        {
+            let mut record = connected.record.lock();
+            crate::session::mode_preference::set_desired_permission_mode(&mut record, mode);
+        }
+        self.persist(&connected).await
+    }
+
     async fn persist(&self, connected: &Arc<ConnectedSession>) -> Result<(), AcpRuntimeError> {
         let snapshot = connected.record.lock().clone();
         self.options

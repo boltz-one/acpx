@@ -9,6 +9,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use agent_client_protocol::schema::v1::{SessionConfigId, SessionConfigValueId};
+use parking_lot::RwLock;
 
 use crate::agent_command::model_request::{
     assert_requested_model_supported, resolve_requested_model_id,
@@ -152,8 +153,19 @@ pub(super) async fn spawn_connected_session(
     // `record_client_operation` + streamed as `AcpRuntimeEvent::ClientOperation`).
     let (operations_tx, operations_rx) = smol::channel::unbounded::<ClientOperation>();
     let fs_operations_tx = operations_tx.clone();
-    let filesystem = Arc::new(
-        FilesystemHandlers::new(
+    // One shared live permission-mode lock: the fs/terminal gates, the
+    // `session/request_permission` wiring, and the manager's
+    // `set_permission_mode` control all read/write through this same cell,
+    // so flipping it after spawn takes effect for in-flight and future calls.
+    // Seed from the persisted desired mode (reconnect re-applies Write/Ask);
+    // fall back to the runtime's construction-time default.
+    let initial_permission_mode =
+        crate::session::mode_preference::get_desired_permission_mode(record.acpx.as_ref())
+            .unwrap_or(options.permission_mode);
+    let permission_mode = Arc::new(RwLock::new(initial_permission_mode));
+    let on_fs_write = options.on_fs_write.clone();
+    let filesystem = {
+        let fs = FilesystemHandlers::new(
             &cwd,
             options.permission_mode,
             options.non_interactive_permissions,
@@ -166,10 +178,15 @@ pub(super) async fn spawn_connected_session(
                 err,
             )
         })?
-        .with_on_operation(Arc::new(move |op| {
+        .with_shared_permission_mode(permission_mode.clone());
+        let fs = match on_fs_write {
+            Some(hook) => fs.with_on_fs_write(hook),
+            None => fs,
+        };
+        Arc::new(fs.with_on_operation(Arc::new(move |op| {
             let _ = fs_operations_tx.try_send(op);
-        })),
-    );
+        })))
+    };
     let terminal = Arc::new(
         TerminalManager::new(TerminalManagerOptions {
             cwd: cwd.clone(),
@@ -178,6 +195,7 @@ pub(super) async fn spawn_connected_session(
             handler: options.on_permission_request.clone(),
             kill_grace: None,
         })
+        .with_shared_permission_mode(permission_mode.clone())
         .with_on_operation(Arc::new(move |op| {
             let _ = operations_tx.try_send(op);
         })),
@@ -186,7 +204,7 @@ pub(super) async fn spawn_connected_session(
         filesystem: Some(filesystem),
         terminal: Some(terminal),
         permission: PermissionRequestWiring {
-            mode: options.permission_mode,
+            mode: permission_mode.clone(),
             non_interactive_policy: options.non_interactive_permissions,
             handler: options.on_permission_request.clone(),
             policy: options.permission_policy.clone(),
@@ -287,5 +305,6 @@ pub(super) async fn spawn_connected_session(
         options.mcp_servers.clone(),
         options.prompt_queue_capacity,
         suppressed_replay_updates,
+        permission_mode,
     ))
 }

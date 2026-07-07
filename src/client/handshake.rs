@@ -259,10 +259,11 @@ pub async fn spawn_and_initialize(
                             // the escalation audit event is surfaced (the
                             // response-only wrapper hardcoded `None` for policy
                             // and discarded the escalation).
+                            let mode = *permission.mode.read();
                             let resolved =
                                 crate::permissions::resolve_permission_request_with_details(
                                     &req,
-                                    permission.mode,
+                                    mode,
                                     permission.non_interactive_policy,
                                     permission.policy.as_ref(),
                                     permission.handler.as_deref(),

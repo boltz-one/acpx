@@ -211,3 +211,79 @@ fn on_operation_callback_fires_for_real_read_text_file() {
         );
     });
 }
+
+#[test]
+fn on_fs_write_hook_fires_with_path_and_content_before_write() {
+    smol::block_on(async {
+        let root = tempdir();
+        std::fs::write(root.join("existing.txt"), "base").unwrap();
+        let observed = std::sync::Arc::new(parking_lot::Mutex::new(Vec::new()));
+        let observed_clone = observed.clone();
+        let handlers = FilesystemHandlers::new(
+            &root,
+            PermissionMode::ApproveAll,
+            NonInteractivePermissionPolicy::Deny,
+            None,
+        )
+        .unwrap()
+        .with_on_fs_write(std::sync::Arc::new(move |path, content| {
+            let base = std::fs::read_to_string(path).ok().unwrap_or_default();
+            observed_clone
+                .lock()
+                .push((path.to_path_buf(), base, content.to_string()));
+        }));
+
+        handlers
+            .write_text_file(WriteTextFileRequest::new(
+                "s1",
+                root.join("existing.txt"),
+                "new",
+            ))
+            .await
+            .unwrap();
+
+        let calls = observed.lock().clone();
+        assert_eq!(calls.len(), 1, "hook must fire exactly once");
+        let (path, base, new) = &calls[0];
+        assert!(
+            path.ends_with("existing.txt"),
+            "hook receives the resolved path: {path:?}"
+        );
+        assert_eq!(base, "base", "hook reads base text BEFORE the write lands");
+        assert_eq!(new, "new");
+        assert_eq!(
+            std::fs::read_to_string(root.join("existing.txt")).unwrap(),
+            "new",
+            "write still lands on disk after the hook"
+        );
+    });
+}
+
+#[test]
+fn set_permission_mode_flips_live_write_approval() {
+    smol::block_on(async {
+        let root = tempdir();
+        let handlers = FilesystemHandlers::new(
+            &root,
+            PermissionMode::ApproveAll,
+            NonInteractivePermissionPolicy::Deny,
+            None,
+        )
+        .unwrap();
+
+        handlers
+            .write_text_file(WriteTextFileRequest::new("s1", root.join("a.txt"), "1"))
+            .await
+            .unwrap();
+
+        handlers.set_permission_mode(PermissionMode::DenyAll);
+        let denied = handlers
+            .write_text_file(WriteTextFileRequest::new("s1", root.join("b.txt"), "2"))
+            .await;
+        assert!(
+            denied.is_err(),
+            "write must be denied after flipping to DenyAll"
+        );
+        assert!(!root.join("b.txt").exists());
+    });
+}

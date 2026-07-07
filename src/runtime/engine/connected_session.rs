@@ -18,7 +18,7 @@ use agent_client_protocol::schema::v1::{
     McpServer, SessionConfigId, SessionConfigValueId, SessionId, SessionModeId,
     SessionNotification, SetSessionConfigOptionResponse,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 use crate::client::AcpClient;
 use crate::error::Result;
@@ -26,6 +26,7 @@ use crate::queue::SessionPromptQueue;
 use crate::session::conversation_model::SessionConversation;
 use crate::session::model_state::advertised_model_state;
 use crate::session::record::SessionRecord;
+use crate::types::PermissionMode;
 
 /// One connected ACP session: the live client, the backend session id
 /// (mutable — reconnect may create a fresh one), and the record/conversation
@@ -79,6 +80,10 @@ pub struct ConnectedSession {
     /// idle wait here.
     observed_session_updates: AtomicU64,
     processed_session_updates: AtomicU64,
+    /// Shared live permission-mode lock — the same `Arc` the fs/terminal
+    /// gates and `session/request_permission` wiring read from. The
+    /// manager's `set_permission_mode` control writes through this clone.
+    permission_mode: Arc<RwLock<PermissionMode>>,
 }
 
 impl ConnectedSession {
@@ -100,6 +105,7 @@ impl ConnectedSession {
         mcp_servers: Vec<McpServer>,
         prompt_queue_capacity: Option<usize>,
         suppressed_replay_updates: u64,
+        permission_mode: Arc<RwLock<PermissionMode>>,
     ) -> Arc<Self> {
         Arc::new(Self {
             client,
@@ -117,6 +123,7 @@ impl ConnectedSession {
             update_order: Mutex::new(()),
             observed_session_updates: AtomicU64::new(suppressed_replay_updates),
             processed_session_updates: AtomicU64::new(0),
+            permission_mode,
         })
     }
 
@@ -144,6 +151,13 @@ impl ConnectedSession {
         self.processed_session_updates
             .fetch_add(1, Ordering::SeqCst);
         self.observed_session_updates.fetch_add(1, Ordering::SeqCst);
+    }
+
+    /// Flips the live permission mode through the shared lock the fs/terminal
+    /// gates and `session/request_permission` wiring read from. Takes effect
+    /// for in-flight and future calls — no session restart needed.
+    pub fn set_permission_mode(&self, mode: PermissionMode) {
+        *self.permission_mode.write() = mode;
     }
 
     /// Runs `f` (expected to be a quick, non-blocking append/forward — see

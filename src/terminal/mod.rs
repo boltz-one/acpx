@@ -24,7 +24,7 @@ use agent_client_protocol::schema::v1::{
     ReleaseTerminalRequest, ReleaseTerminalResponse, TerminalId, TerminalOutputRequest,
     TerminalOutputResponse, WaitForTerminalExitRequest, WaitForTerminalExitResponse,
 };
-use parking_lot::Mutex;
+use parking_lot::{Mutex, RwLock};
 
 pub use output::{DEFAULT_TERMINAL_OUTPUT_LIMIT_BYTES, OutputSnapshot};
 
@@ -57,7 +57,7 @@ pub struct TerminalManagerOptions {
 /// `permissions::confirm_action`).
 pub struct TerminalManager {
     cwd: PathBuf,
-    permission_mode: PermissionMode,
+    permission_mode: Arc<RwLock<PermissionMode>>,
     non_interactive_policy: NonInteractivePermissionPolicy,
     handler: Option<Arc<dyn PermissionRequestHandler>>,
     kill_grace: Duration,
@@ -74,13 +74,35 @@ impl TerminalManager {
     pub fn new(options: TerminalManagerOptions) -> Self {
         Self {
             cwd: options.cwd,
-            permission_mode: options.permission_mode,
+            permission_mode: Arc::new(RwLock::new(options.permission_mode)),
             non_interactive_policy: options.non_interactive_policy,
             handler: options.handler,
             kill_grace: options.kill_grace.unwrap_or(kill::DEFAULT_KILL_GRACE),
             terminals: Mutex::new(HashMap::new()),
             on_operation: None,
         }
+    }
+
+    /// Shares the live permission-mode lock with an externally owned clone
+    /// (the manager keeps one so `set_permission_mode` can update it).
+    pub fn with_shared_permission_mode(
+        mut self,
+        permission_mode: Arc<RwLock<PermissionMode>>,
+    ) -> Self {
+        self.permission_mode = permission_mode;
+        self
+    }
+
+    /// Returns a clone of the live permission-mode lock so the manager can
+    /// update it via `set_permission_mode` after the manager has been moved
+    /// into the session's connection task.
+    pub fn shared_permission_mode(&self) -> Arc<RwLock<PermissionMode>> {
+        self.permission_mode.clone()
+    }
+
+    /// Updates the live permission policy through the shared lock.
+    pub fn set_permission_mode(&self, permission_mode: PermissionMode) {
+        *self.permission_mode.write() = permission_mode;
     }
 
     /// Attaches an operation-progress callback, mirroring acpx's
@@ -101,7 +123,7 @@ impl TerminalManager {
         permission_mode: PermissionMode,
         non_interactive_policy: NonInteractivePermissionPolicy,
     ) {
-        self.permission_mode = permission_mode;
+        *self.permission_mode.write() = permission_mode;
         self.non_interactive_policy = non_interactive_policy;
     }
 
@@ -126,8 +148,9 @@ impl TerminalManager {
         let summary = format!("terminal/create: {command_line}");
         self.emit_operation("terminal/create", "running", summary.clone(), None);
 
+        let mode = *self.permission_mode.read();
         let approved = confirm_action(
-            self.permission_mode,
+            mode,
             self.non_interactive_policy,
             self.handler.as_deref(),
             params.session_id.clone(),

@@ -1,14 +1,13 @@
-//! Ported from `boltz-util`'s `process.rs`: a `smol::process::Child` wrapper
-//! that spawns children as their own session/process group (Unix) so an entire
-//! subprocess tree can be signalled at once, and kills via `killpg` (Unix).
+//! A `smol::process::Child` wrapper that spawns children as their own
+//! session/process group (Unix) so an entire subprocess tree can be
+//! signalled at once, and kills via `killpg` (Unix).
 //!
-//! Kills its process group on `Drop` (mirroring Zed's
-//! `agent_servers::acp::AcpConnection` `impl Drop`, which calls
-//! `child.kill()`): `smol::process::Child` does not kill on drop, so without
-//! this a dropped handle would orphan the agent subprocess tree for the
-//! host's lifetime. Explicit [`Child::kill`]/`shutdown` paths still work —
-//! `Drop` is the backstop that guarantees no orphan when a session/handle is
-//! simply dropped (e.g. a chat tab closed).
+//! Kills its process group on `Drop`: `smol::process::Child` does not kill
+//! on drop, so without this a dropped handle would orphan the agent
+//! subprocess tree for the host's lifetime. Explicit
+//! [`Child::kill`]/`shutdown` paths still work — `Drop` is the backstop that
+//! guarantees no orphan when a session/handle is simply dropped (e.g. a chat
+//! tab closed).
 
 use anyhow::{Context as _, Result};
 use std::process::Stdio;
@@ -70,9 +69,9 @@ impl Child {
         stdout: Stdio,
         stderr: Stdio,
     ) -> Result<Self> {
-        // TODO(windows): create a job object and add the child process handle
-        // to it so descendants are killed as a group, mirroring the Unix
-        // session-group behavior. See
+        // Windows: descendants are not yet killed as a group (would require
+        // a job object with the child process handle added to it, mirroring
+        // the Unix session-group behavior). See
         // https://learn.microsoft.com/en-us/windows/win32/procthread/job-objects
         let mut command = smol::process::Command::from(command);
         let process = command
@@ -94,9 +93,7 @@ impl Child {
     /// Consumes the wrapper, returning the inner child WITHOUT killing it
     /// (takes the child out so the `Drop` kill sees `None`).
     pub fn into_inner(mut self) -> smol::process::Child {
-        self.process
-            .take()
-            .expect("Child used after into_inner")
+        self.process.take().expect("Child used after into_inner")
     }
 
     #[cfg(not(windows))]
@@ -115,7 +112,7 @@ impl Child {
 
     #[cfg(windows)]
     pub fn kill(&mut self) -> Result<()> {
-        // TODO(windows): terminate the job object once one is created in spawn.
+        // No job object exists yet to terminate (see the note in `spawn`).
         if let Some(process) = self.process.as_mut() {
             process.kill()?;
         }
@@ -125,8 +122,8 @@ impl Child {
 
 impl Drop for Child {
     fn drop(&mut self) {
-        // Mirror Zed's `AcpConnection::drop` (`child.kill()`): guarantee the
-        // subprocess tree dies when its handle is dropped. No-op if already
+        // Guarantee the subprocess tree dies when its handle is dropped
+        // (`smol::process::Child` has no kill-on-drop). No-op if already
         // taken via `into_inner`. Best-effort — a dead pgid just errors.
         if self.process.is_some() {
             let _ = self.kill();
